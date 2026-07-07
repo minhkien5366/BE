@@ -57,8 +57,8 @@ public class OrderServiceImpl implements OrderService {
     private String vnp_TmnCode;
     @Value("${vnpay.hashSecret:QTZTTGZMCYALZMMYVOTZMMZLXUKYVMLM}")
     private String vnp_HashSecret;
-    @Value("${vnpay.returnUrl:http://localhost:8080/api/v1/orders/vnpay-callback}")
-    // @Value("${vnpay.returnUrl:https://akcinema-api.onrender.com/api/v1/orders/vnpay-callback}")
+    // @Value("${vnpay.returnUrl:http://localhost:8080/api/v1/orders/vnpay-callback}")
+    @Value("${vnpay.returnUrl:https://nkcinema-api.onrender.com/api/v1/orders/vnpay-callback}")
     private String vnp_ReturnUrl;
 
     // 🔥 HÀM BẢO VỆ CHỐNG NHÂN BẢN DỮ LIỆU CỦA JPA
