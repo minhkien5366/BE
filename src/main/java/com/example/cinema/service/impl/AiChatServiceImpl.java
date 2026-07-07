@@ -95,7 +95,7 @@ public class AiChatServiceImpl {
         }
 
         if ("[SYSTEM_CLOSE]".equalsIgnoreCase(userMessage.trim())) {
-            return "Phiên trò chuyện với Quản lý đã kết thúc. A&K AI đã trở lại, bạn cần mình giúp gì thêm không?";
+            return "Phiên trò chuyện với Quản lý đã kết thúc. NKS AI đã trở lại, bạn cần mình giúp gì thêm không?";
         }
 
         if (!hasText(aiApiKey)) {
@@ -346,7 +346,7 @@ public class AiChatServiceImpl {
         if (comboCatalog.isEmpty()) comboCatalog = "Chưa có thông tin bắp nước.";
 
         return "# VAI TRÒ\n" +
-                "Bạn là Trợ lý AI thông minh của rạp phim A&K Cinema. \n\n" +
+                "Bạn là Trợ lý AI thông minh của rạp phim NK Cinema. \n\n" +
                 
                 "# QUY TẮC TRẢ LỜI CỐT LÕI (BẮT BUỘC):\n" +
                 "1. HỎI ĐÂU ĐÁP ĐÓ: Khách hỏi gì trả lời ĐÚNG TRỌNG TÂM cái đó. Khách hỏi phim thì chỉ nói về phim, hỏi suất chiếu thì chỉ nói suất chiếu.\n" +

@@ -31,44 +31,110 @@ public class MailServiceImpl implements MailService {
     private final TicketRepository ticketRepository;
     private final ComboRepository comboRepository;
 
+    private String escape(Object raw) {
+        if (raw == null) return "";
+
+        return String.valueOf(raw)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    private String textOr(Object raw, String fallback) {
+        String value = raw == null ? "" : String.valueOf(raw).trim();
+        return value.isEmpty() ? fallback : value;
+    }
+
+    private String getCustomerName(User user) {
+        if (user == null) return "Quý khách";
+
+        String firstName = user.getFirstName() == null ? "" : user.getFirstName().trim();
+        String lastName = user.getLastName() == null ? "" : user.getLastName().trim();
+        String fullName = (firstName + " " + lastName).trim();
+
+        return fullName.isEmpty() ? "Quý khách" : fullName;
+    }
+
+    private String formatMoney(NumberFormat formatter, Object amount) {
+        try {
+            return formatter.format(amount == null ? 0 : amount);
+        } catch (Exception e) {
+            return "0 ₫";
+        }
+    }
+
+    private String formatShowDate(Showtime showtime, DateTimeFormatter dateFormatter) {
+        try {
+            if (showtime == null || showtime.getStartTime() == null) return "N/A";
+            return showtime.getStartTime().format(dateFormatter);
+        } catch (Exception e) {
+            return "N/A";
+        }
+    }
+
+    private String formatShowTime(Showtime showtime, DateTimeFormatter timeFormatter) {
+        try {
+            if (showtime == null || showtime.getStartTime() == null) return "N/A";
+
+            String start = showtime.getStartTime().format(timeFormatter);
+            String end = showtime.getEndTime() != null
+                    ? showtime.getEndTime().format(timeFormatter)
+                    : "";
+
+            return end.isEmpty() ? start : start + " - " + end;
+        } catch (Exception e) {
+            return "N/A";
+        }
+    }
+
     @Override
     @Async
     public void sendOrderConfirmation(Order order) {
         try {
+            if (order == null || order.getUser() == null || order.getUser().getEmail() == null) {
+                return;
+            }
+
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            // Chỉ định email người gửi
-            helper.setFrom("kienphatanh@gmail.com", "A&K Cinema Ticket");
-            
+            helper.setFrom("kienphatanh@gmail.com", "KN Cinema Ticket");
             helper.setTo(order.getUser().getEmail());
-            helper.setSubject("A&K CINEMA - VÉ ĐIỆN TỬ XÁC NHẬN # " + order.getId());
+            helper.setSubject("KN CINEMA - VÉ ĐIỆN TỬ XÁC NHẬN #" + order.getId());
 
             NumberFormat vnFormat = NumberFormat.getCurrencyInstance(new Locale("vi", "VN"));
             DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
             DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm");
-            
-            String totalAmountFormatted = vnFormat.format(order.getTotalAmount());
-            String customerName = order.getUser().getFirstName() + " " + order.getUser().getLastName();
+
+            String totalAmountFormatted = formatMoney(vnFormat, order.getTotalAmount());
+            String customerName = getCustomerName(order.getUser());
 
             String movieTitle = "Vé Xem Phim";
             String roomName = "N/A";
+            String cinemaName = "KN Cinema";
             String showDate = "N/A";
             String showTime = "N/A";
             List<String> seatNames = new ArrayList<>();
             List<String> comboDetails = new ArrayList<>();
-            String commonBookingCode = "N/A";
+            String commonBookingCode = "KN-CINEMA";
 
             Long detectedShowtimeId = null;
+
             if (order.getOrderDetails() != null) {
-                for (OrderDetail od : order.getOrderDetails()) {
-                    if ("TICKET".equals(od.getItemType())) {
+                for (OrderDetail orderDetail : order.getOrderDetails()) {
+                    if ("TICKET".equalsIgnoreCase(String.valueOf(orderDetail.getItemType()))) {
                         detectedShowtimeId = ticketRepository.findAll().stream()
-                                .filter(t -> t.getSeat() != null && t.getSeat().getId().equals(od.getItemId()))
-                                .sorted(Comparator.comparing(Ticket::getId).reversed()) 
-                                .map(t -> t.getShowtime().getId())
+                                .filter(ticket ->
+                                        ticket.getSeat() != null &&
+                                                ticket.getSeat().getId().equals(orderDetail.getItemId())
+                                )
+                                .sorted(Comparator.comparing(Ticket::getId).reversed())
+                                .map(ticket -> ticket.getShowtime().getId())
                                 .findFirst()
                                 .orElse(null);
+
                         if (detectedShowtimeId != null) break;
                     }
                 }
@@ -76,78 +142,186 @@ public class MailServiceImpl implements MailService {
 
             if (order.getOrderDetails() != null) {
                 for (OrderDetail detail : order.getOrderDetails()) {
-                    if ("TICKET".equals(detail.getItemType())) {
+                    String itemType = String.valueOf(detail.getItemType());
+
+                    if ("TICKET".equalsIgnoreCase(itemType)) {
                         if (detectedShowtimeId != null) {
-                            List<Ticket> tickets = ticketRepository.findBySeatIdAndShowtimeId(detail.getItemId(), detectedShowtimeId);
+                            List<Ticket> tickets = ticketRepository.findBySeatIdAndShowtimeId(
+                                    detail.getItemId(),
+                                    detectedShowtimeId
+                            );
+
                             if (!tickets.isEmpty()) {
-                                Ticket t = tickets.get(0);
-                                if (t.getShowtime() != null) {
-                                    movieTitle = t.getShowtime().getMovie() != null ? t.getShowtime().getMovie().getTitle() : movieTitle;
-                                    roomName = t.getShowtime().getRoom() != null ? t.getShowtime().getRoom().getName() : roomName;
-                                    showDate = t.getShowtime().getStartTime().format(dateFormatter);
-                                    showTime = t.getShowtime().getStartTime().format(timeFormatter) + " - " + t.getShowtime().getEndTime().format(timeFormatter);
+                                Ticket ticket = tickets.get(0);
+                                Showtime showtime = ticket.getShowtime();
+
+                                if (showtime != null) {
+                                    movieTitle = showtime.getMovie() != null
+                                            ? textOr(showtime.getMovie().getTitle(), movieTitle)
+                                            : movieTitle;
+
+                                    roomName = showtime.getRoom() != null
+                                            ? textOr(showtime.getRoom().getName(), roomName)
+                                            : roomName;
+
+                                    cinemaName = showtime.getCinemaItem() != null
+                                            ? textOr(showtime.getCinemaItem().getName(), cinemaName)
+                                            : cinemaName;
+
+                                    showDate = formatShowDate(showtime, dateFormatter);
+                                    showTime = formatShowTime(showtime, timeFormatter);
                                 }
-                                commonBookingCode = t.getBookingCode() != null ? t.getBookingCode() : commonBookingCode;
-                                seatNames.add(t.getSeatName() != null ? t.getSeatName() : (t.getSeatRow() + t.getSeatNumber()));
+
+                                commonBookingCode = ticket.getBookingCode() != null
+                                        ? ticket.getBookingCode()
+                                        : commonBookingCode;
+
+                                String seatName = ticket.getSeatName() != null
+                                        ? ticket.getSeatName()
+                                        : ticket.getSeatRow() + ticket.getSeatNumber();
+
+                                seatNames.add(seatName);
                             }
                         }
-                    } else if ("COMBO".equals(detail.getItemType())) {
-                        String cName = comboRepository.findById(detail.getItemId()).map(Combo::getName).orElse("Combo Bắp Nước");
-                        comboDetails.add(cName + " (x" + detail.getQuantity() + ")");
+                    } else if ("COMBO".equalsIgnoreCase(itemType)) {
+                        String comboName = comboRepository.findById(detail.getItemId())
+                                .map(Combo::getName)
+                                .orElse("Combo Bắp Nước");
+
+                        comboDetails.add(escape(comboName) + " <span style='color:#f4d419;'>x" + escape(detail.getQuantity()) + "</span>");
                     }
                 }
             }
 
             Collections.sort(seatNames);
-            String seatsString = seatNames.isEmpty() ? "N/A" : String.join(", ", seatNames);
-            String combosString = comboDetails.isEmpty() ? "Không đăng ký bắp nước" : String.join("<br/> ", comboDetails);
 
-            String qrCodeUrl = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + URLEncoder.encode(commonBookingCode, StandardCharsets.UTF_8);
+            String seatsString = seatNames.isEmpty()
+                    ? "N/A"
+                    : escape(String.join(", ", seatNames));
+
+            String combosString = comboDetails.isEmpty()
+                    ? "<span style='color:#64748b;'>Không đăng ký bắp nước</span>"
+                    : String.join("<br/>", comboDetails);
+
+            String qrCodeUrl =
+                    "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" +
+                            URLEncoder.encode(commonBookingCode, StandardCharsets.UTF_8);
 
             StringBuilder content = new StringBuilder();
-            content.append("<div style='background-color: #050507; padding: 40px 15px; font-family: system-ui, -apple-system, sans-serif;'>");
-            content.append("<div style='max-width: 480px; margin: 0 auto; background-color: #0b0b0f; border: 1px solid rgba(220,38,38,0.15); border-radius: 32px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7);'>");
-            
-            content.append("<div style='background: linear-gradient(135deg, #111, #1e050a); padding: 35px 25px; text-align: center; border-bottom: 2px dashed #050507;'>");
-            content.append("<div style='font-size: 10px; font-weight: 900; letter-spacing: 5px; color: #dc2626; text-transform: uppercase; margin-bottom: 8px;'>A&K CINEMA TICKET</div>");
-            content.append("<h2 style='margin: 0; font-size: 24px; font-weight: 900; color: #ffffff; text-transform: uppercase; letter-spacing: -0.5px;'>Vé Xem Phim Điện Tử</h2>");
-            content.append("<div style='display: inline-block; margin-top: 15px; background-color: rgba(220,38,38,0.1); border: 1px solid rgba(220,38,38,0.2); padding: 6px 16px; border-radius: 20px; font-size: 11px; color: #ef4444; font-weight: 800; text-transform: uppercase;'>Mã Đơn: #").append(order.getId()).append("</div>");
+
+            content.append("<div style='background:#080b14; padding:42px 14px; font-family:Arial, Helvetica, sans-serif; color:#f8fafc;'>");
+            content.append("<div style='max-width:560px; margin:0 auto;'>");
+
+            content.append("<div style='background:#0b1020; border:1px solid rgba(255,255,255,0.10); border-radius:28px; overflow:hidden; box-shadow:0 28px 80px rgba(0,0,0,0.55);'>");
+
+            content.append("<div style='height:4px; background:linear-gradient(90deg, transparent, #f4d419, transparent);'></div>");
+
+            content.append("<div style='padding:34px 28px 28px; text-align:center; background:#0b1020;'>");
+            content.append("<div style='display:inline-block; padding:6px 14px; border-radius:999px; background:#111827; border:1px solid rgba(244,212,25,0.28); color:#f4d419; font-size:10px; font-weight:900; letter-spacing:2.5px; text-transform:uppercase; margin-bottom:18px;'>");
+            content.append("KN Cinema Ticket");
             content.append("</div>");
 
-            content.append("<div style='padding: 30px 25px; background-color: #0b0b0f;'>");
-            content.append("<span style='font-size: 9px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: 2px; display: block; margin-bottom: 6px;'>Tác Phẩm Điện Ảnh</span>");
-            content.append("<h1 style='margin: 0 0 25px 0; font-size: 24px; font-weight: 900; color: #ffffff; line-height: 1.2; text-transform: uppercase; font-style: italic;'>").append(movieTitle).append("</h1>");
-            
-            content.append("<table style='width: 100%; font-size: 13px; color: #9ca3af;'>");
+            content.append("<h1 style='margin:0; color:#ffffff; font-size:30px; line-height:1; font-weight:900; letter-spacing:-1px; text-transform:uppercase;'>");
+            content.append("Vé điện tử");
+            content.append("</h1>");
+
+            content.append("<p style='margin:12px 0 0; color:#94a3b8; font-size:12px; line-height:1.6; font-weight:700; text-transform:uppercase; letter-spacing:1.2px;'>");
+            content.append("Giao dịch đã được xác nhận thành công");
+            content.append("</p>");
+
+            content.append("<div style='display:inline-block; margin-top:18px; background:#111827; border:1px solid rgba(255,255,255,0.10); padding:7px 14px; border-radius:12px; color:#e2e8f0; font-size:11px; font-weight:900; letter-spacing:1px;'>");
+            content.append("Mã đơn #").append(escape(order.getId()));
+            content.append("</div>");
+            content.append("</div>");
+
+            content.append("<div style='padding:28px; background:#0d1222; border-top:1px solid rgba(255,255,255,0.08);'>");
+            content.append("<div style='font-size:9px; font-weight:900; color:#f4d419; text-transform:uppercase; letter-spacing:2px; margin-bottom:8px;'>");
+            content.append("Tác phẩm điện ảnh");
+            content.append("</div>");
+
+            content.append("<h2 style='margin:0 0 22px; color:#ffffff; font-size:24px; line-height:1.18; font-weight:900; text-transform:uppercase; letter-spacing:-0.4px;'>");
+            content.append(escape(movieTitle));
+            content.append("</h2>");
+
+            content.append("<table style='width:100%; border-collapse:separate; border-spacing:0 10px;'>");
+
             content.append("<tr>");
-            content.append("<td style='padding-bottom: 20px; width: 50%;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Ngày Chiếu</span><strong style='color:#f4f4f5; font-size:14px;'>").append(showDate).append("</strong></td>");
-            content.append("<td style='padding-bottom: 20px; width: 50%;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Suất Chiếu</span><strong style='color:#f4f4f5; font-size:14px;'>").append(showTime).append("</strong></td>");
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Ngày chiếu</span>");
+            content.append("<strong style='color:#f8fafc; font-size:14px;'>").append(escape(showDate)).append("</strong>");
+            content.append("</td>");
+
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Suất chiếu</span>");
+            content.append("<strong style='color:#67e8f9; font-size:14px;'>").append(escape(showTime)).append("</strong>");
+            content.append("</td>");
             content.append("</tr>");
+
             content.append("<tr>");
-            content.append("<td><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Phòng Chiếu</span><strong style='color:#dc2626; font-size:18px; font-weight:900;'>").append(roomName).append("</strong></td>");
-            content.append("<td><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Vị Trí Ghế</span><strong style='color:#ffffff; font-size:18px; font-weight:900;'>").append(seatsString).append("</strong></td>");
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Rạp / Phòng</span>");
+            content.append("<strong style='color:#f8fafc; font-size:13px; line-height:1.35;'>").append(escape(cinemaName)).append("<br/><span style='color:#f4d419;'>").append(escape(roomName)).append("</span></strong>");
+            content.append("</td>");
+
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Vị trí ghế</span>");
+            content.append("<strong style='color:#ffffff; font-size:18px; font-weight:900;'>").append(seatsString).append("</strong>");
+            content.append("</td>");
             content.append("</tr>");
+
             content.append("</table>");
             content.append("</div>");
 
-            content.append("<div style='padding: 35px 25px; background-color: #0e0e14; text-align: center; border-top: 1px dashed rgba(255,255,255,0.05); border-bottom: 1px dashed rgba(255,255,255,0.05);'>");
-            content.append("<div style='font-size: 11px; font-weight: 800; color: #a1a1aa; letter-spacing: 2px; margin-bottom: 15px; text-transform: uppercase;'>Mã QR Soát Vé Tại Quầy</div>");
-            content.append("<div style='display: inline-block; padding: 12px; background-color: #ffffff; border-radius: 20px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);'><img src='").append(qrCodeUrl).append("' style='display: block;' width='160' height='160' alt='QR Code'/></div>");
-            content.append("<div style='margin-top: 15px; font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 5px;'>").append(commonBookingCode).append("</div>");
-            content.append("<p style='margin: 10px 0 0 0; font-size: 11px; color: #52525b; font-weight: 500;'>Đưa mã này cho nhân viên soát vé để quét mã bàn giao vé cứng và bắp nước.</p>");
+            content.append("<div style='padding:34px 28px; background:#0b1020; text-align:center; border-top:1px dashed rgba(255,255,255,0.14); border-bottom:1px dashed rgba(255,255,255,0.14);'>");
+            content.append("<div style='font-size:10px; font-weight:900; color:#94a3b8; letter-spacing:2px; margin-bottom:16px; text-transform:uppercase;'>");
+            content.append("Mã QR soát vé tại quầy");
             content.append("</div>");
 
-            content.append("<div style='padding: 30px 25px; background-color: #0b0b0f;'>");
-            content.append("<table style='width: 100%; font-size: 13px; color: #a1a1aa; border-collapse: collapse;'>");
-            content.append("<tr><td style='padding-bottom: 8px;'>Khách Hàng:</td><td style='text-align: right; color: #fff; font-weight: bold;'>").append(customerName).append("</td></tr>");
-            content.append("<tr><td style='padding-bottom: 8px; vertical-align: top;'>Dịch Vụ Đi Kèm:</td><td style='text-align: right; color: #fff; font-weight: bold; line-height: 1.4;'>").append(combosString).append("</td></tr>");
-            content.append("<tr style='border-top: 1px solid rgba(255,255,255,0.05);'><td style='padding-top: 15px; font-size: 14px; font-weight: bold; color: #fff;'>Tổng Số Tiền Đã Trả:</td><td style='text-align: right; padding-top: 15px; font-size: 20px; font-weight: 900; color: #dc2626;'>").append(totalAmountFormatted).append("</td></tr>");
+            content.append("<div style='display:inline-block; padding:14px; background:#ffffff; border-radius:22px; box-shadow:0 18px 42px rgba(0,0,0,0.45);'>");
+            content.append("<img src='").append(escape(qrCodeUrl)).append("' style='display:block; border:0;' width='160' height='160' alt='QR Code'/>");
+            content.append("</div>");
+
+            content.append("<div style='margin:18px auto 0; max-width:260px; background:#111827; border:1px solid rgba(255,255,255,0.10); color:#ffffff; padding:10px 14px; border-radius:14px; font-size:18px; font-weight:900; letter-spacing:4px; font-family:monospace;'>");
+            content.append(escape(commonBookingCode));
+            content.append("</div>");
+
+            content.append("<p style='margin:12px auto 0; max-width:360px; color:#64748b; font-size:11px; line-height:1.6; font-weight:700;'>");
+            content.append("Đưa mã này cho nhân viên quầy soát vé để quét QR và nhận vé cứng / combo đi kèm.");
+            content.append("</p>");
+            content.append("</div>");
+
+            content.append("<div style='padding:28px; background:#0d1222;'>");
+            content.append("<table style='width:100%; border-collapse:collapse; font-size:13px; color:#94a3b8;'>");
+
+            content.append("<tr>");
+            content.append("<td style='padding:0 0 12px;'>Khách hàng</td>");
+            content.append("<td style='padding:0 0 12px; text-align:right; color:#ffffff; font-weight:900;'>").append(escape(customerName)).append("</td>");
+            content.append("</tr>");
+
+            content.append("<tr>");
+            content.append("<td style='padding:0 0 12px; vertical-align:top;'>Dịch vụ đi kèm</td>");
+            content.append("<td style='padding:0 0 12px; text-align:right; color:#ffffff; font-weight:800; line-height:1.5;'>").append(combosString).append("</td>");
+            content.append("</tr>");
+
+            content.append("<tr>");
+            content.append("<td colspan='2' style='height:1px; background:rgba(255,255,255,0.10);'></td>");
+            content.append("</tr>");
+
+            content.append("<tr>");
+            content.append("<td style='padding-top:18px; color:#ffffff; font-size:14px; font-weight:900;'>Tổng thanh toán</td>");
+            content.append("<td style='padding-top:18px; text-align:right; color:#f4d419; font-size:24px; font-weight:900;'>").append(escape(totalAmountFormatted)).append("</td>");
+            content.append("</tr>");
+
             content.append("</table>");
             content.append("</div>");
 
-            content.append("<div style='background-color: #060608; padding: 20px; text-align: center; color: #3f3f46; font-size: 10px; font-weight: bold;'>");
-            content.append("<p style='margin: 0 0 4px 0;'>HỆ THỐNG ĐIỆN TỬ PHÁT HÀNH VÉ TỰ ĐỘNG A&K CINEMA</p>");
-            content.append("<p style='margin: 0;'>© 2026 A&K Cinema. All rights reserved.</p>");
+            content.append("<div style='background:#080b14; padding:20px; text-align:center; border-top:1px solid rgba(255,255,255,0.08);'>");
+            content.append("<p style='margin:0 0 5px; color:#64748b; font-size:10px; font-weight:900; letter-spacing:1.2px; text-transform:uppercase;'>");
+            content.append("Hệ thống điện tử phát hành vé tự động KN Cinema");
+            content.append("</p>");
+            content.append("<p style='margin:0; color:#475569; font-size:10px; font-weight:700;'>© 2026 KN Cinema. All rights reserved.</p>");
+            content.append("</div>");
+
             content.append("</div>");
             content.append("</div>");
             content.append("</div>");
@@ -159,84 +333,144 @@ public class MailServiceImpl implements MailService {
         }
     }
 
-    // ==========================================
-    // 🔥 HÀM MỚI: GỬI MAIL THÔNG BÁO HỦY SUẤT CHIẾU VÀ ĐỀN BÙ
-    // ==========================================
     @Override
     @Async
     public void sendShowtimeCancellationEmail(User user, Showtime showtime, int points, boolean isSystemAuto) {
         try {
+            if (user == null || user.getEmail() == null || showtime == null) {
+                return;
+            }
+
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            helper.setFrom("kienphatanh@gmail.com", "A&K Cinema Support");
+            helper.setFrom("kienphatanh@gmail.com", "KN Cinema Support");
             helper.setTo(user.getEmail());
-            helper.setSubject("A&K CINEMA - THÔNG BÁO HỦY SUẤT CHIẾU & ĐỀN BÙ ĐIỂM THƯỞNG");
+            helper.setSubject("KN CINEMA - THÔNG BÁO HỦY SUẤT CHIẾU & ĐỀN BÙ ĐIỂM THƯỞNG");
 
             DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
             DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm");
 
-            String customerName = user.getFirstName() + " " + user.getLastName();
-            String movieTitle = showtime.getMovie() != null ? showtime.getMovie().getTitle() : "Phim Điện Ảnh";
-            String showDate = showtime.getStartTime().format(dateFormatter);
-            String showTime = showtime.getStartTime().format(timeFormatter) + " - " + showtime.getEndTime().format(timeFormatter);
-            String roomName = showtime.getRoom() != null ? showtime.getRoom().getName() : "N/A";
-            String cinemaName = showtime.getCinemaItem() != null ? showtime.getCinemaItem().getName() : "Hệ thống A&K Cinema";
+            String customerName = getCustomerName(user);
+            String movieTitle = showtime.getMovie() != null
+                    ? textOr(showtime.getMovie().getTitle(), "Phim Điện Ảnh")
+                    : "Phim Điện Ảnh";
+
+            String showDate = formatShowDate(showtime, dateFormatter);
+            String showTime = formatShowTime(showtime, timeFormatter);
+
+            String roomName = showtime.getRoom() != null
+                    ? textOr(showtime.getRoom().getName(), "N/A")
+                    : "N/A";
+
+            String cinemaName = showtime.getCinemaItem() != null
+                    ? textOr(showtime.getCinemaItem().getName(), "Hệ thống KN Cinema")
+                    : "Hệ thống KN Cinema";
+
+            String reasonMessage = isSystemAuto
+                    ? "KN Cinema vô cùng xin lỗi quý khách. Do suất chiếu không đạt đủ số lượng vé tối thiểu để vận hành, hệ thống buộc phải hủy suất chiếu này."
+                    : "KN Cinema vô cùng xin lỗi quý khách. Do sự cố kỹ thuật đột xuất tại rạp, suất chiếu của quý khách đã buộc phải hủy bỏ.";
 
             StringBuilder content = new StringBuilder();
-            content.append("<div style='background-color: #050507; padding: 40px 15px; font-family: system-ui, -apple-system, sans-serif;'>");
-            content.append("<div style='max-width: 480px; margin: 0 auto; background-color: #0b0b0f; border: 1px solid rgba(220,38,38,0.15); border-radius: 32px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7);'>");
 
-            // Header Hủy
-            content.append("<div style='background: linear-gradient(135deg, #111, #1e050a); padding: 35px 25px; text-align: center; border-bottom: 2px dashed #050507;'>");
-            content.append("<div style='font-size: 10px; font-weight: 900; letter-spacing: 5px; color: #dc2626; text-transform: uppercase; margin-bottom: 8px;'>THÔNG BÁO QUAN TRỌNG</div>");
-            content.append("<h2 style='margin: 0; font-size: 22px; font-weight: 900; color: #ffffff; text-transform: uppercase; letter-spacing: -0.5px;'>HỦY SUẤT CHIẾU</h2>");
+            content.append("<div style='background:#080b14; padding:42px 14px; font-family:Arial, Helvetica, sans-serif; color:#f8fafc;'>");
+            content.append("<div style='max-width:560px; margin:0 auto;'>");
+
+            content.append("<div style='background:#0b1020; border:1px solid rgba(255,255,255,0.10); border-radius:28px; overflow:hidden; box-shadow:0 28px 80px rgba(0,0,0,0.55);'>");
+
+            content.append("<div style='height:4px; background:linear-gradient(90deg, transparent, #fb7185, transparent);'></div>");
+
+            content.append("<div style='padding:34px 28px 28px; text-align:center; background:#0b1020;'>");
+            content.append("<div style='display:inline-block; padding:6px 14px; border-radius:999px; background:#111827; border:1px solid rgba(251,113,133,0.35); color:#fb7185; font-size:10px; font-weight:900; letter-spacing:2.5px; text-transform:uppercase; margin-bottom:18px;'>");
+            content.append("Thông báo quan trọng");
             content.append("</div>");
 
-            // Body
-            content.append("<div style='padding: 30px 25px; background-color: #0b0b0f;'>");
-            content.append("<p style='color: #d4d4d8; font-size: 14px; line-height: 1.6;'>Kính gửi quý khách <strong style='color:#fff;'>").append(customerName).append("</strong>,</p>");
+            content.append("<h1 style='margin:0; color:#ffffff; font-size:28px; line-height:1; font-weight:900; letter-spacing:-1px; text-transform:uppercase;'>");
+            content.append("Hủy suất chiếu");
+            content.append("</h1>");
 
-            String reasonMsg = isSystemAuto 
-                ? "Cinema A&K vô cùng xin lỗi quý khách. Do suất chiếu không đạt đủ số lượng vé tối thiểu để vận hành, hệ thống buộc phải hủy suất chiếu này ạ." 
-                : "Cinema A&K vô cùng xin lỗi quý khách. Do sự cố kỹ thuật đột xuất tại rạp, suất chiếu của quý khách đã buộc phải hủy bỏ.";
-
-            content.append("<p style='color: #d4d4d8; font-size: 14px; line-height: 1.6;'>").append(reasonMsg).append("</p>");
-
-            // Hộp đền bù điểm
-            content.append("<div style='background-color: rgba(220,38,38,0.05); border: 1px solid rgba(220,38,38,0.2); border-radius: 16px; padding: 25px 20px; margin: 25px 0; text-align: center;'>");
-            content.append("<span style='font-size: 11px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 8px;'>ĐÃ HOÀN TRẢ ĐIỂM THƯỞNG TỰ ĐỘNG</span>");
-            content.append("<h3 style='margin: 0; font-size: 32px; font-weight: 900; color: #ffffff;'>+").append(points).append(" <span style='font-size: 16px;'>Điểm</span></h3>");
-            content.append("<p style='margin: 12px 0 0 0; font-size: 12px; color: #a1a1aa; line-height: 1.5;'>Tương đương tổng giá trị hóa đơn. Quý khách có thể dùng điểm này để đổi mã giảm giá hoặc thanh toán cho lần đặt vé sau.</p>");
+            content.append("<p style='margin:12px auto 0; max-width:380px; color:#94a3b8; font-size:12px; line-height:1.6; font-weight:700;'>");
+            content.append("KN Cinema rất tiếc phải thông báo suất chiếu của quý khách đã bị hủy.");
+            content.append("</p>");
             content.append("</div>");
 
-            // Chi tiết suất chiếu bị hủy
-            content.append("<span style='font-size: 9px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: 2px; display: block; margin-bottom: 6px;'>THÔNG TIN SUẤT CHIẾU ĐÃ HỦY</span>");
-            content.append("<h1 style='margin: 0 0 20px 0; font-size: 20px; font-weight: 900; color: #ffffff; line-height: 1.2; text-transform: uppercase; font-style: italic; text-decoration: line-through;'>").append(movieTitle).append("</h1>");
-            
-            content.append("<table style='width: 100%; font-size: 13px; color: #9ca3af;'>");
+            content.append("<div style='padding:28px; background:#0d1222;'>");
+            content.append("<p style='margin:0 0 14px; color:#dbeafe; font-size:14px; line-height:1.7;'>");
+            content.append("Kính gửi quý khách <strong style='color:#ffffff;'>").append(escape(customerName)).append("</strong>,");
+            content.append("</p>");
+
+            content.append("<p style='margin:0; color:#cbd5e1; font-size:13px; line-height:1.7;'>");
+            content.append(escape(reasonMessage));
+            content.append("</p>");
+
+            content.append("<div style='margin:26px 0; background:#111827; border:1px solid rgba(244,212,25,0.28); border-radius:18px; padding:24px 18px; text-align:center;'>");
+            content.append("<span style='font-size:10px; font-weight:900; color:#f4d419; text-transform:uppercase; letter-spacing:2px; display:block; margin-bottom:10px;'>");
+            content.append("Đã hoàn trả điểm thưởng tự động");
+            content.append("</span>");
+
+            content.append("<h2 style='margin:0; font-size:40px; line-height:1; font-weight:900; color:#f4d419;'>");
+            content.append("+").append(escape(points));
+            content.append("<span style='font-size:16px; color:#ffffff; margin-left:6px;'>Điểm</span>");
+            content.append("</h2>");
+
+            content.append("<p style='margin:13px auto 0; max-width:360px; font-size:12px; color:#94a3b8; line-height:1.6; font-weight:700;'>");
+            content.append("Quý khách có thể dùng điểm này để đổi mã giảm giá hoặc sử dụng cho lần đặt vé tiếp theo.");
+            content.append("</p>");
+            content.append("</div>");
+
+            content.append("<div style='font-size:9px; font-weight:900; color:#fb7185; text-transform:uppercase; letter-spacing:2px; margin-bottom:8px;'>");
+            content.append("Thông tin suất chiếu đã hủy");
+            content.append("</div>");
+
+            content.append("<h2 style='margin:0 0 20px; color:#ffffff; font-size:22px; line-height:1.2; font-weight:900; text-transform:uppercase; letter-spacing:-0.3px; text-decoration:line-through; text-decoration-color:#fb7185;'>");
+            content.append(escape(movieTitle));
+            content.append("</h2>");
+
+            content.append("<table style='width:100%; border-collapse:separate; border-spacing:0 10px;'>");
+
             content.append("<tr>");
-            content.append("<td style='padding-bottom: 15px; width: 50%;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Ngày Chiếu</span><strong style='color:#f4f4f5; font-size:14px;'>").append(showDate).append("</strong></td>");
-            content.append("<td style='padding-bottom: 15px; width: 50%;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Suất Chiếu</span><strong style='color:#f4f4f5; font-size:14px;'>").append(showTime).append("</strong></td>");
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Ngày chiếu</span>");
+            content.append("<strong style='color:#f8fafc; font-size:14px;'>").append(escape(showDate)).append("</strong>");
+            content.append("</td>");
+
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Suất chiếu</span>");
+            content.append("<strong style='color:#67e8f9; font-size:14px;'>").append(escape(showTime)).append("</strong>");
+            content.append("</td>");
             content.append("</tr>");
+
             content.append("<tr>");
-            content.append("<td style='padding-bottom: 15px;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Rạp Chiếu</span><strong style='color:#f4f4f5; font-size:14px;'>").append(cinemaName).append("</strong></td>");
-            content.append("<td style='padding-bottom: 15px;'><span style='display:block; font-size:10px; color:#52525b; font-weight:bold; text-transform:uppercase;'>Phòng Chiếu</span><strong style='color:#dc2626; font-size:14px; font-weight:900;'>").append(roomName).append("</strong></td>");
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Rạp chiếu</span>");
+            content.append("<strong style='color:#f8fafc; font-size:13px; line-height:1.35;'>").append(escape(cinemaName)).append("</strong>");
+            content.append("</td>");
+
+            content.append("<td style='width:50%; padding:14px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:14px;'>");
+            content.append("<span style='display:block; color:#64748b; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px;'>Phòng chiếu</span>");
+            content.append("<strong style='color:#f4d419; font-size:14px; font-weight:900;'>").append(escape(roomName)).append("</strong>");
+            content.append("</td>");
             content.append("</tr>");
+
             content.append("</table>");
             content.append("</div>");
 
-            // Footer
-            content.append("<div style='background-color: #060608; padding: 20px; text-align: center; color: #3f3f46; font-size: 10px; font-weight: bold;'>");
-            content.append("<p style='margin: 0 0 4px 0;'>HỆ THỐNG ĐIỆN TỬ PHÁT HÀNH VÉ TỰ ĐỘNG A&K CINEMA</p>");
-            content.append("<p style='margin: 0;'>Một lần nữa, chúng tôi thành thật xin lỗi vì sự bất tiện này.</p>");
+            content.append("<div style='background:#080b14; padding:22px 24px; text-align:center; border-top:1px solid rgba(255,255,255,0.08);'>");
+            content.append("<p style='margin:0 0 8px; color:#cbd5e1; font-size:12px; line-height:1.6; font-weight:700;'>");
+            content.append("Một lần nữa, KN Cinema thành thật xin lỗi vì sự bất tiện này.");
+            content.append("</p>");
+
+            content.append("<p style='margin:0; color:#64748b; font-size:10px; font-weight:900; letter-spacing:1.2px; text-transform:uppercase;'>");
+            content.append("Hệ thống chăm sóc khách hàng KN Cinema");
+            content.append("</p>");
+            content.append("</div>");
+
             content.append("</div>");
             content.append("</div>");
             content.append("</div>");
 
             helper.setText(content.toString(), true);
             mailSender.send(message);
-
         } catch (Exception e) {
             System.err.println("Lỗi gửi mail thông báo hủy: " + e.getMessage());
         }
